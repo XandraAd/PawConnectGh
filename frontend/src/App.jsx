@@ -31,6 +31,7 @@ import Breeders from "@/pages/Breeders";
 import AdminPanel from "@/admin/pages/AdminPanel";
 import PostDetail from "./pages/PostDetail";
 import PageNotFound from "./pages/PageNotFound";
+import DogDetail from "./pages/DogDetail";
 
 function App() {
   return (
@@ -67,6 +68,8 @@ function App() {
               <Route path="/my-listings" element={<MyListings />} />
               <Route path="/breeders" element={<Breeders />} />
               <Route path="/post/:postId" element={<PostDetail />} />
+              <Route path="/user/:userId" element={<Profile />} /> 
+              <Route path="/dog/:dogId" element={<DogDetail />} />
             </Route>
 
             {/* Admin-only route — requires isAdmin: true on the user's profile,

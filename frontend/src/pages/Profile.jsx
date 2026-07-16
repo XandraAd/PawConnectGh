@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import { databases, DATABASE_ID, COLLECTIONS, account, storage } from "@/lib/appwriteClient";
 import { Query, ID } from "appwrite";
 import { Settings, Plus, Grid3X3, Bookmark, Award, Camera, X, Edit2, Save, Crown, Heart, MessageCircle, Share2 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import moment from "moment";
+import { useAuth } from "@/lib/AuthContext";
 
 export default function Profile() {
+  const { userId } = useParams();
   const navigate = useNavigate();
-  const [user, setUser] = useState(null);
+  const { user: currentUser } = useAuth();
+
+  const [userData, setUserData] = useState(null);
   const [profile, setProfile] = useState(null);
   const [dogs, setDogs] = useState([]);
   const [posts, setPosts] = useState([]);
@@ -28,87 +31,76 @@ export default function Profile() {
   const [avatarFile, setAvatarFile] = useState(null);
   const [avatarPreview, setAvatarPreview] = useState(null);
 
+  const isOwnProfile = !userId || (currentUser && userId === currentUser.$id);
+
   useEffect(() => {
+    if (!currentUser) return;
     loadProfile();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, currentUser]);
 
   const loadProfile = async () => {
     setLoading(true);
     try {
-      const currentUser = await account.get();
-      setUser(currentUser);
+      let targetUserId = userId;
+      if (!targetUserId) {
+        if (!currentUser) return;
+        targetUserId = currentUser.$id;
+      }
 
-      let userProfile = null;
-      try {
-        const profileResponse = await databases.listDocuments(
-          DATABASE_ID,
-          COLLECTIONS.PROFILES,
-          [Query.equal("userId", currentUser.$id), Query.limit(1)]
-        );
-        if (profileResponse.documents.length > 0) {
-          userProfile = profileResponse.documents[0];
-          setProfile(userProfile);
-          setEditForm({
-            fullName: userProfile.fullName || currentUser.name || "",
-            username: userProfile.username || currentUser.email?.split('@')[0] || "",
-            bio: userProfile.bio || "",
-            location: userProfile.location || "",
-            isBreeder: userProfile.isBreeder || false,
-          });
-          setAvatarPreview(userProfile.avatarUrl || null);
-        } else {
-          const newProfile = await databases.createDocument(
-            DATABASE_ID,
-            COLLECTIONS.PROFILES,
-            ID.unique(),
-            {
-              userId: currentUser.$id,
-              username: currentUser.name || currentUser.email?.split('@')[0] || "user",
-              fullName: currentUser.name || "User",
-              avatarUrl: "",
-              bio: "",
-              location: "Ghana",
-              isBreeder: false,
-              isFeatured: false,
-            }
-          );
-          setProfile(newProfile);
-          setEditForm({
-            fullName: newProfile.fullName || currentUser.name || "",
-            username: newProfile.username || "",
-            bio: newProfile.bio || "",
-            location: newProfile.location || "",
-            isBreeder: newProfile.isBreeder || false,
-          });
-        }
-      } catch (error) {
-        console.error("Error fetching profile:", error);
+      const profileResponse = await databases.listDocuments(
+        DATABASE_ID,
+        COLLECTIONS.PROFILES,
+        [Query.equal("userId", targetUserId), Query.limit(1)]
+      );
+
+      if (profileResponse.documents.length === 0) {
+        setProfile(null);
+        setLoading(false);
+        return;
+      }
+      const targetProfile = profileResponse.documents[0];
+      setProfile(targetProfile);
+
+      if (isOwnProfile) {
+        setEditForm({
+          fullName: targetProfile.fullName || currentUser.name || "",
+          username: targetProfile.username || currentUser.email?.split('@')[0] || "",
+          bio: targetProfile.bio || "",
+          location: targetProfile.location || "",
+          isBreeder: targetProfile.isBreeder || false,
+        });
+        setAvatarPreview(targetProfile.avatarUrl || null);
       }
 
       const dogsResponse = await databases.listDocuments(
         DATABASE_ID,
         COLLECTIONS.PETS,
-        [Query.equal("ownerId", currentUser.$id), Query.limit(50)]
+        [Query.equal("ownerId", targetUserId), Query.limit(50)]
       );
       setDogs(dogsResponse.documents);
 
       const postsResponse = await databases.listDocuments(
         DATABASE_ID,
         COLLECTIONS.POSTS,
-        [Query.equal("userId", currentUser.$id), Query.orderDesc("$createdAt"), Query.limit(50)]
+        [Query.equal("userId", targetUserId), Query.orderDesc("$createdAt"), Query.limit(50)]
       );
       setPosts(postsResponse.documents);
 
       setFollowers(0);
       setFollowing(0);
+
+      setUserData({ id: targetUserId });
     } catch (error) {
       console.error("Error loading profile:", error);
+      toast.error("Failed to load profile");
     } finally {
       setLoading(false);
     }
   };
 
   const handleAvatarChange = (e) => {
+    if (!isOwnProfile) return;
     const file = e.target.files?.[0];
     if (!file) return;
     setAvatarFile(file);
@@ -127,6 +119,7 @@ export default function Profile() {
   };
 
   const handleSaveProfile = async () => {
+    if (!isOwnProfile) return;
     setSaving(true);
     try {
       let avatarUrl = profile?.avatarUrl || "";
@@ -157,10 +150,12 @@ export default function Profile() {
 
   const handleAddDog = () => navigate("/add-dog");
   const handleSettings = () => navigate("/settings");
+
   const toggleEdit = () => {
+    if (!isOwnProfile) return;
     if (isEditing) {
       setEditForm({
-        fullName: profile?.fullName || user?.name || "",
+        fullName: profile?.fullName || currentUser?.name || "",
         username: profile?.username || "",
         bio: profile?.bio || "",
         location: profile?.location || "",
@@ -172,6 +167,48 @@ export default function Profile() {
     setIsEditing(!isEditing);
   };
 
+  const startChat = async () => {
+    if (!userId || !currentUser) return;
+    try {
+      const existing = await databases.listDocuments(
+        DATABASE_ID,
+        COLLECTIONS.CONVERSATIONS,
+        [
+          Query.contains("participantIds", currentUser.$id),
+          Query.contains("participantIds", userId),
+          Query.limit(1)
+        ]
+      );
+      if (existing.documents.length > 0) {
+        navigate(`/conversation/${existing.documents[0].$id}`);
+        return;
+      }
+
+      // `type` and `name` are intentionally omitted — not real attributes
+      // in the conversations schema. Other participant's name is looked
+      // up dynamically in ConversationChat instead of cached here.
+      const newConv = await databases.createDocument(
+        DATABASE_ID,
+        COLLECTIONS.CONVERSATIONS,
+        ID.unique(),
+        {
+          participantIds: [currentUser.$id, userId],
+          lastMessage: "",
+          lastMessageAt: new Date().toISOString(),
+          // unreadCounts is a JSON *string* field — must be stringified
+          unreadCounts: JSON.stringify({
+            [currentUser.$id]: 0,
+            [userId]: 0,
+          }),
+        }
+      );
+      navigate(`/conversation/${newConv.$id}`);
+    } catch (error) {
+      console.error("Error starting chat:", error);
+      toast.error("Failed to start conversation");
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -180,8 +217,30 @@ export default function Profile() {
     );
   }
 
-  const displayName = profile?.fullName || profile?.username || user?.name || "User";
-  const displayUsername = profile?.username || user?.email?.split('@')[0] || "user";
+  if (!profile) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background px-4">
+        <div className="text-6xl mb-4">👤</div>
+        <h2 className="font-jakarta font-bold text-xl text-foreground">Profile not found</h2>
+        <p className="text-muted-foreground text-sm mt-1 text-center max-w-xs">
+          {isOwnProfile
+            ? "Please complete your profile to get started."
+            : "This user hasn't set up their profile yet."}
+        </p>
+        {isOwnProfile && (
+          <button
+            onClick={() => navigate("/settings")}
+            className="mt-4 px-6 py-2 bg-primary text-white rounded-xl font-jakarta font-medium text-sm"
+          >
+            Complete Profile
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const displayName = profile?.fullName || profile?.username || "User";
+  const displayUsername = profile?.username || "user";
   const displayLocation = profile?.location || "Ghana";
   const displayBio = profile?.bio || "";
   const displayAvatar = profile?.avatarUrl || "";
@@ -190,12 +249,13 @@ export default function Profile() {
 
   return (
     <div className="min-h-screen bg-background pb-24">
-      {/* Header */}
       <div className="sticky top-0 z-40 bg-card/80 backdrop-blur-xl border-b border-border/50">
         <div className="max-w-[430px] mx-auto flex items-center justify-between px-4 py-3">
-          <h1 className="font-jakarta font-bold text-lg text-foreground">Profile</h1>
+          <h1 className="font-jakarta font-bold text-lg text-foreground">
+            {isOwnProfile ? "Profile" : displayName}
+          </h1>
           <div className="flex items-center gap-2">
-            {!isEditing && (
+            {isOwnProfile && !isEditing && (
               <button
                 onClick={toggleEdit}
                 className="w-9 h-9 rounded-full bg-muted flex items-center justify-center active:scale-95 transition-transform hover:bg-primary/10"
@@ -203,22 +263,31 @@ export default function Profile() {
                 <Edit2 className="w-4 h-4 text-foreground" />
               </button>
             )}
-            <button
-              onClick={handleSettings}
-              className="w-9 h-9 rounded-full bg-muted flex items-center justify-center active:scale-95 transition-transform hover:bg-primary/10"
-            >
-              <Settings className="w-5 h-5 text-foreground" />
-            </button>
+            {isOwnProfile && (
+              <button
+                onClick={handleSettings}
+                className="w-9 h-9 rounded-full bg-muted flex items-center justify-center active:scale-95 transition-transform hover:bg-primary/10"
+              >
+                <Settings className="w-5 h-5 text-foreground" />
+              </button>
+            )}
+            {!isOwnProfile && (
+              <button
+                onClick={startChat}
+                className="px-4 py-2 bg-primary text-white rounded-xl text-sm font-jakarta font-medium active:scale-95 transition-transform"
+              >
+                Message
+              </button>
+            )}
           </div>
         </div>
       </div>
 
       <div className="max-w-[430px] mx-auto">
-        {/* Avatar & Info */}
         <div className="flex flex-col items-center pt-8 pb-4 px-4">
           <div className="relative">
             <div className="w-28 h-28 rounded-full ring-2 ring-primary/20 bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center text-primary text-4xl font-jakarta font-bold overflow-hidden">
-              {avatarPreview ? (
+              {isEditing && avatarPreview ? (
                 <img src={avatarPreview} alt={displayName} className="w-full h-full object-cover" />
               ) : displayAvatar ? (
                 <img src={displayAvatar} alt={displayName} className="w-full h-full object-cover" />
@@ -229,17 +298,11 @@ export default function Profile() {
             {isEditing && (
               <label className="absolute bottom-0 right-0 w-8 h-8 bg-primary rounded-full flex items-center justify-center cursor-pointer hover:bg-primary/90 transition-colors border-2 border-card shadow-md">
                 <Camera className="w-4 h-4 text-white" />
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleAvatarChange}
-                  className="hidden"
-                />
+                <input type="file" accept="image/*" onChange={handleAvatarChange} className="hidden" />
               </label>
             )}
           </div>
 
-          {/* Badges */}
           <div className="flex flex-wrap items-center gap-2 mt-3">
             {isBreeder && !isEditing && (
               <div className="bg-primary/10 text-primary px-3 py-1 rounded-full flex items-center gap-1.5 text-xs font-jakarta font-medium">
@@ -256,7 +319,6 @@ export default function Profile() {
           </div>
 
           {isEditing ? (
-            // Edit Mode
             <div className="w-full mt-5 space-y-4">
               <div>
                 <label className="block text-xs font-jakarta font-semibold text-muted-foreground mb-1">Full Name</label>
@@ -297,7 +359,6 @@ export default function Profile() {
                 />
               </div>
 
-              {/* Breeder Toggle */}
               <div className="bg-muted rounded-xl p-3 border border-border/30">
                 <div className="flex items-center justify-between">
                   <div className="flex-1">
@@ -354,7 +415,6 @@ export default function Profile() {
               </div>
             </div>
           ) : (
-            // View Mode
             <>
               <h2 className="font-jakarta font-bold text-xl text-foreground mt-3">{displayName}</h2>
               <p className="text-sm font-jakarta text-muted-foreground">@{displayUsername}</p>
@@ -366,7 +426,6 @@ export default function Profile() {
           )}
         </div>
 
-        {/* Stats */}
         {!isEditing && (
           <div className="flex justify-center gap-10 pb-5 border-b border-border/50">
             {[
@@ -382,12 +441,11 @@ export default function Profile() {
           </div>
         )}
 
-        {/* My Dogs */}
-        {!isEditing && (
+        {!isEditing && isOwnProfile && (
           <div className="px-4 mt-4 mb-4">
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-jakarta font-semibold text-sm text-foreground">My Dogs</h3>
-              <button onClick={handleAddDog} className="text-xs font-jakarta text-primary font-medium">See All</button>
+              <button onClick={() => navigate("/my-dogs")} className="text-xs font-jakarta text-primary font-medium">See All</button>
             </div>
             <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-1">
               <button
@@ -401,7 +459,7 @@ export default function Profile() {
                 <div
                   key={dog.$id}
                   className="shrink-0 w-20 h-24 bg-card rounded-2xl overflow-hidden border border-border/50 shadow-sm cursor-pointer active:scale-95 transition-transform hover:shadow-md"
-                  onClick={() => navigate(`/dog/${dog.$id}`)}
+                  onClick={() => navigate(`/add-dog?edit=${dog.$id}`)}
                 >
                   <div className="h-14 bg-muted">
                     {dog.photoUrl ? (
@@ -417,7 +475,6 @@ export default function Profile() {
           </div>
         )}
 
-        {/* Tab Switcher */}
         {!isEditing && (
           <>
             <div className="flex border-b border-border">
@@ -430,24 +487,27 @@ export default function Profile() {
                 <Grid3X3 className="w-4 h-4" />
                 Posts
               </button>
-              <button
-                onClick={() => setTab("saved")}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-3 text-sm font-jakarta font-semibold transition-colors ${
-                  tab === "saved" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Bookmark className="w-4 h-4" />
-                Saved
-              </button>
+              {isOwnProfile && (
+                <button
+                  onClick={() => setTab("saved")}
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-3 text-sm font-jakarta font-semibold transition-colors ${
+                    tab === "saved" ? "text-primary border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <Bookmark className="w-4 h-4" />
+                  Saved
+                </button>
+              )}
             </div>
 
-            {/* Grid */}
             <div className="grid grid-cols-3 gap-0.5 mt-0.5">
               {tab === "posts" && posts.length === 0 && (
                 <div className="col-span-3 text-center py-16">
                   <div className="text-6xl mb-3">📷</div>
                   <p className="font-jakarta font-semibold text-foreground">No posts yet</p>
-                  <p className="font-jakarta text-sm text-muted-foreground mt-1">Share your first post!</p>
+                  {isOwnProfile && (
+                    <p className="font-jakarta text-sm text-muted-foreground mt-1">Share your first post!</p>
+                  )}
                 </div>
               )}
               {tab === "posts" &&
@@ -468,7 +528,7 @@ export default function Profile() {
                     )}
                   </div>
                 ))}
-              {tab === "saved" && (
+              {isOwnProfile && tab === "saved" && (
                 <div className="col-span-3 text-center py-16">
                   <div className="text-6xl mb-3">🔖</div>
                   <p className="font-jakarta font-semibold text-foreground">No saved posts</p>

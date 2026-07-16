@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
-import { account } from '@/lib/appwriteClient';
+import { account } from '../lib/appwriteClient';
 import { useAuth } from '@/lib/AuthContext';
 
 export default function VerifyEmail() {
@@ -27,6 +27,21 @@ export default function VerifyEmail() {
         setStatus('success');
         setTimeout(() => navigate('/'), 1500);
       } catch (err) {
+        // The token may have already been consumed by the email app's automatic
+        // link-scanning (common on mobile mail clients) before the user tapped
+        // it themselves. If that happened, verification actually already
+        // succeeded — check the account directly rather than showing a false error.
+        try {
+          const current = await account.get();
+          if (current.emailVerification) {
+            await refreshUser();
+            setStatus('success');
+            setTimeout(() => navigate('/'), 1500);
+            return;
+          }
+        } catch {
+          // Not logged in on this device/session — can't check, fall through to error
+        }
         setStatus('error');
         setErrorMsg(err.message || 'This link may have expired. Please request a new one.');
       }

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { databases, DATABASE_ID, COLLECTIONS, account } from "@/lib/appwriteClient";
 import { Query } from "appwrite";
-import { ArrowLeft, Plus, Edit, Trash2, PawPrint } from "lucide-react";
+import { ArrowLeft, Plus, Edit, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function MyDogs() {
@@ -41,17 +41,16 @@ export default function MyDogs() {
 
   const handleDeleteDog = async (dogId) => {
     if (!window.confirm("Are you sure you want to remove this dog?")) return;
-    
+
     try {
-      await databases.deleteDocument(
-        DATABASE_ID,
-        COLLECTIONS.PETS,
-        dogId
-      );
+      await databases.deleteDocument(DATABASE_ID, COLLECTIONS.PETS, dogId);
       setDogs(prev => prev.filter(dog => dog.$id !== dogId));
       toast.success("Dog removed successfully");
     } catch (error) {
       console.error("Error deleting dog:", error);
+      // A 401 here almost always means this specific pet document predates
+      // the owner-only permission fix and has no delete permission set —
+      // see the note in AddDog.jsx about migrating legacy pet documents.
       toast.error("Failed to remove dog");
     }
   };
@@ -110,7 +109,6 @@ export default function MyDogs() {
                 className="bg-card rounded-2xl border border-border/50 overflow-hidden active:scale-[0.98] transition-transform"
               >
                 <div className="flex items-center gap-4 p-4">
-                  {/* Dog Photo */}
                   <div className="w-16 h-16 rounded-xl overflow-hidden bg-muted shrink-0">
                     {dog.photoUrl ? (
                       <img src={dog.photoUrl} alt={dog.name} className="w-full h-full object-cover" />
@@ -119,7 +117,6 @@ export default function MyDogs() {
                     )}
                   </div>
 
-                  {/* Dog Info */}
                   <div className="flex-1 min-w-0">
                     <h3 className="font-jakarta font-semibold text-foreground">{dog.name}</h3>
                     <p className="text-xs font-jakarta text-muted-foreground">{dog.breed}</p>
@@ -135,10 +132,9 @@ export default function MyDogs() {
                     </div>
                   </div>
 
-                  {/* Actions */}
                   <div className="flex gap-1">
                     <button
-                      onClick={() => navigate(`/dog/${dog.$id}`)}
+                      onClick={() => navigate(`/add-dog?edit=${dog.$id}`)}
                       className="p-2 rounded-lg bg-muted hover:bg-muted/80 transition-colors"
                     >
                       <Edit className="w-4 h-4 text-muted-foreground" />

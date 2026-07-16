@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { databases, DATABASE_ID, COLLECTIONS, account } from "@/lib/appwriteClient";
+import { databases, DATABASE_ID, COLLECTIONS, account, } from "@/lib/appwriteClient";
+import client from "@/lib/appwriteClient";
 import { Query, ID } from "appwrite";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { ArrowLeft, Send, MapPin } from "lucide-react";
+import { ArrowLeft, Send } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 
@@ -12,6 +13,7 @@ export default function ConversationChat() {
   const [conv, setConv] = useState(null);
   const [messages, setMessages] = useState([]);
   const [user, setUser] = useState(null);
+  const [otherName, setOtherName] = useState("User");
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -19,16 +21,15 @@ export default function ConversationChat() {
 
   useEffect(() => {
     loadConversation();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
   const loadConversation = async () => {
     setLoading(true);
     try {
-      // Get current user
       const currentUser = await account.get();
       setUser(currentUser);
 
-      // Get conversation
       const conversation = await databases.getDocument(
         DATABASE_ID,
         COLLECTIONS.CONVERSATIONS,
@@ -36,7 +37,17 @@ export default function ConversationChat() {
       );
       setConv(conversation);
 
-      // Get messages for this conversation
+      // Look up the other participant's real name
+      const otherId = conversation.participantIds?.find((id) => id !== currentUser.$id);
+      if (otherId) {
+        try {
+          const otherProfile = await databases.getDocument(DATABASE_ID, COLLECTIONS.PROFILES, otherId);
+          setOtherName(otherProfile.fullName || otherProfile.username || "User");
+        } catch {
+          setOtherName("User"); // profile may not exist / not readable
+        }
+      }
+
       const messagesResponse = await databases.listDocuments(
         DATABASE_ID,
         COLLECTIONS.MESSAGES,
@@ -48,8 +59,7 @@ export default function ConversationChat() {
       );
       setMessages(messagesResponse.documents);
 
-      // Mark messages as read
-      await markMessagesAsRead(conversation, currentUser);
+      await markAsRead(conversation, currentUser);
     } catch (error) {
       console.error("Error loading conversation:", error);
       toast.error("Failed to load conversation");
@@ -58,51 +68,41 @@ export default function ConversationChat() {
     }
   };
 
-  const markMessagesAsRead = async (conversation, currentUser) => {
+  // Resets THIS user's unread count on the conversation to 0. This is the
+  // real read-receipt: it's what the Home page notification badge reads from,
+  // so opening a conversation here (not just clicking its notification)
+  // correctly clears it too.
+  const markAsRead = async (conversation, currentUser) => {
     try {
-      // Update the conversation to mark messages as read
-      // You can either update the conversation document or create a read receipt system
-      // For simplicity, we'll update the conversation
-      await databases.updateDocument(
-        DATABASE_ID,
-        COLLECTIONS.CONVERSATIONS,
-        conversation.$id,
-        {
-          lastReadAt: new Date().toISOString(),
-        }
-      );
+      const unreadCounts = conversation.unreadCounts ? JSON.parse(conversation.unreadCounts) : {};
+      if (unreadCounts[currentUser.$id] === 0 || !unreadCounts[currentUser.$id]) return; // already clear, skip write
+      unreadCounts[currentUser.$id] = 0;
+      await databases.updateDocument(DATABASE_ID, COLLECTIONS.CONVERSATIONS, conversation.$id, {
+        unreadCounts: JSON.stringify(unreadCounts),
+      });
     } catch (error) {
-      console.error("Error marking messages as read:", error);
+      console.error("Error marking conversation as read:", error);
     }
   };
 
-  // Real-time subscription (using Appwrite Realtime)
+  // Realtime subscription for new incoming messages
   useEffect(() => {
     if (!conversationId) return;
 
-    // Subscribe to new messages
-    const unsubscribe = databases.client.subscribe(
+    const unsubscribe = client.subscribe(
       `databases.${DATABASE_ID}.collections.${COLLECTIONS.MESSAGES}.documents`,
       (response) => {
         if (response.payload && response.payload.conversationId === conversationId) {
-          // Check if message already exists
-          setMessages(prev => {
-            if (prev.find(m => m.$id === response.payload.$id)) {
-              return prev;
-            }
-            // Only add if it's not from the current user (to avoid duplicates)
-            if (response.payload.senderId === user?.$id) {
-              return prev;
-            }
+          setMessages((prev) => {
+            if (prev.find((m) => m.$id === response.payload.$id)) return prev;
+            if (response.payload.senderId === user?.$id) return prev; // avoid dupes with our own optimistic add
             return [...prev, response.payload];
           });
         }
       }
     );
 
-    return () => {
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, [conversationId, user]);
 
   useEffect(() => {
@@ -116,7 +116,6 @@ export default function ConversationChat() {
     setText("");
 
     try {
-      // Create message
       const newMessage = await databases.createDocument(
         DATABASE_ID,
         COLLECTIONS.MESSAGES,
@@ -126,14 +125,19 @@ export default function ConversationChat() {
           senderId: user.$id,
           senderName: user.name || "User",
           content: msgText,
-          role: "user",
         }
       );
 
-      // Add to messages list
-      setMessages(prev => [...prev, newMessage]);
+      setMessages((prev) => [...prev, newMessage]);
 
-      // Update conversation with last message
+      // Bump unread count for every OTHER participant — this is what makes
+      // the notification badge on Home actually light up for them.
+      const unreadCounts = conv.unreadCounts ? JSON.parse(conv.unreadCounts) : {};
+      const otherParticipants = (conv.participantIds || []).filter((id) => id !== user.$id);
+      for (const id of otherParticipants) {
+        unreadCounts[id] = (unreadCounts[id] || 0) + 1;
+      }
+
       await databases.updateDocument(
         DATABASE_ID,
         COLLECTIONS.CONVERSATIONS,
@@ -141,11 +145,11 @@ export default function ConversationChat() {
         {
           lastMessage: msgText,
           lastMessageAt: new Date().toISOString(),
+          unreadCounts: JSON.stringify(unreadCounts),
         }
       );
 
-      // Update local conversation state
-      setConv(prev => ({ ...prev, lastMessage: msgText }));
+      setConv((prev) => ({ ...prev, lastMessage: msgText, unreadCounts: JSON.stringify(unreadCounts) }));
     } catch (error) {
       console.error("Error sending message:", error);
       toast.error("Failed to send message");
@@ -161,15 +165,6 @@ export default function ConversationChat() {
     }
   };
 
-  // Get other participant's name
-  const getOtherParticipantName = () => {
-    if (!conv || !user) return "User";
-    const otherId = conv.participantIds?.find(id => id !== user.$id);
-    // You could fetch the participant's profile here
-    // For now, return a placeholder
-    return otherId || "User";
-  };
-
   if (loading || !conv || !user) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -177,8 +172,6 @@ export default function ConversationChat() {
       </div>
     );
   }
-
-  const otherName = getOtherParticipantName();
 
   return (
     <div className="min-h-screen bg-background flex flex-col max-w-[430px] mx-auto">
@@ -193,30 +186,17 @@ export default function ConversationChat() {
           </button>
           <div className="flex-1 min-w-0">
             <p className="font-jakarta font-bold text-sm text-foreground truncate">{otherName}</p>
-            <p className="font-jakarta text-[11px] text-muted-foreground truncate">Re: {conv.listingTitle || "Listing"}</p>
           </div>
-          {conv.listingImage && (
-            <Link to={`/listing/${conv.listingId}`}>
-              <img
-                src={conv.listingImage}
-                alt={conv.listingTitle || "Listing"}
-                className="w-10 h-10 rounded-xl object-cover border border-border/50 shrink-0"
-              />
-            </Link>
-          )}
         </div>
 
-        {/* Listing banner */}
+        {/* Listing banner — only shows if this conversation is tied to a listing */}
         {conv.listingId && (
-          <Link 
-            to={`/listing/${conv.listingId}`} 
+          <Link
+            to={`/listing/${conv.listingId}`}
             className="flex items-center gap-3 px-4 py-2.5 bg-accent/50 border-t border-border/30"
           >
             <div className="flex-1 min-w-0">
-              <p className="font-jakarta text-xs font-semibold text-foreground truncate">{conv.listingTitle || "Listing"}</p>
-              {conv.listingPrice && (
-                <p className="font-jakarta text-xs text-primary font-bold">₵{conv.listingPrice?.toLocaleString()}</p>
-              )}
+              <p className="font-jakarta text-xs font-semibold text-foreground truncate">View listing</p>
             </div>
             <span className="text-xs font-jakarta text-muted-foreground">View →</span>
           </Link>
@@ -231,29 +211,27 @@ export default function ConversationChat() {
             <p className="font-jakarta text-sm text-muted-foreground">Say hello to start the conversation!</p>
           </div>
         )}
-        {messages
-          .filter(msg => msg.role !== "system")
-          .map((msg) => {
-            const isMe = msg.senderId === user.$id;
-            return (
-              <div key={msg.$id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[75%] ${isMe ? "items-end" : "items-start"} flex flex-col gap-1`}>
-                  <div
-                    className={`px-4 py-2.5 rounded-2xl text-sm font-jakarta leading-relaxed ${
-                      isMe
-                        ? "bg-primary text-white rounded-br-sm"
-                        : "bg-card border border-border/50 text-foreground rounded-bl-sm"
-                    }`}
-                  >
-                    {msg.content}
-                  </div>
-                  <span className="text-[10px] font-jakarta text-muted-foreground px-1">
-                    {moment(msg.$createdAt).format("h:mm A")}
-                  </span>
+        {messages.map((msg) => {
+          const isMe = msg.senderId === user.$id;
+          return (
+            <div key={msg.$id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[75%] ${isMe ? "items-end" : "items-start"} flex flex-col gap-1`}>
+                <div
+                  className={`px-4 py-2.5 rounded-2xl text-sm font-jakarta leading-relaxed ${
+                    isMe
+                      ? "bg-primary text-white rounded-br-sm"
+                      : "bg-card border border-border/50 text-foreground rounded-bl-sm"
+                  }`}
+                >
+                  {msg.content}
                 </div>
+                <span className="text-[10px] font-jakarta text-muted-foreground px-1">
+                  {moment(msg.$createdAt).format("h:mm A")}
+                </span>
               </div>
-            );
-          })}
+            </div>
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 

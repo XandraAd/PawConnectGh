@@ -2,9 +2,9 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { databases, DATABASE_ID, COLLECTIONS } from "@/lib/appwriteClient";
 import { Query } from "appwrite";
-import { 
-  ArrowLeft, Heart, MessageCircle, Share2, Bookmark, MoreHorizontal, 
-  Copy, Flag, Trash, X, Link, Send 
+import {
+  ArrowLeft, Heart, MessageCircle, Share2, Bookmark, MoreHorizontal,
+  Copy, Flag, Trash, X, Link, Send
 } from "lucide-react";
 import { FaFacebook, FaTwitter, FaEnvelope } from "react-icons/fa";
 import { IoLogoWhatsapp } from "react-icons/io5";
@@ -28,6 +28,7 @@ export default function PostDetail() {
 
   useEffect(() => {
     fetchPost();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [postId]);
 
   const fetchPost = async () => {
@@ -39,27 +40,22 @@ export default function PostDetail() {
         postId
       );
       setPost(postData);
-      setLikesCount(postData.likes || 0);
 
-      // Check if user already liked this post
-      const likedBy = postData.likedBy || [];
+      const likesArray = postData.likes || [];
+      setLikesCount(likesArray.length);
       if (user) {
-        setLiked(likedBy.includes(user.$id));
+        setLiked(likesArray.includes(user.$id));
       }
 
-      // Fetch comments count
       try {
         const commentsResponse = await databases.listDocuments(
           DATABASE_ID,
           COLLECTIONS.COMMENTS,
-          [
-            Query.equal("postId", postId),
-            Query.limit(1)
-          ]
+          [Query.equal("postId", postId), Query.limit(1)]
         );
         setCommentCount(commentsResponse.total || 0);
       } catch {
-        setCommentCount(0);
+        setCommentCount(postData.commentCount || 0);
       }
 
       if (postData.userId) {
@@ -86,32 +82,33 @@ export default function PostDetail() {
       toast.error("Please log in to like posts");
       return;
     }
-    if (isLiking) return;
-    
-    setIsLiking(true);
-    try {
-      const newLiked = !liked;
-      const newCount = newLiked ? likesCount + 1 : likesCount - 1;
-      setLiked(newLiked);
-      setLikesCount(newCount);
+    if (isLiking || !post) return;
 
-      await databases.updateDocument(
-        DATABASE_ID,
-        COLLECTIONS.POSTS,
-        postId,
-        { likes: newCount }
-      );
+    setIsLiking(true);
+    const currentLikes = post.likes || [];
+    const newLiked = !liked;
+    const newLikesArray = newLiked
+      ? [...currentLikes, user.$id]
+      : currentLikes.filter((id) => id !== user.$id);
+
+    setLiked(newLiked);
+    setLikesCount(newLikesArray.length);
+
+    try {
+      await databases.updateDocument(DATABASE_ID, COLLECTIONS.POSTS, postId, {
+        likes: newLikesArray,
+      });
+      setPost((prev) => ({ ...prev, likes: newLikesArray }));
     } catch (error) {
       console.error("Error toggling like:", error);
       toast.error("Failed to update like");
-      setLiked(!liked);
-      setLikesCount(liked ? likesCount + 1 : likesCount - 1);
+      setLiked(!newLiked);
+      setLikesCount(currentLikes.length);
     } finally {
       setIsLiking(false);
     }
   };
 
-  // ---- SHARE FUNCTIONS ----
   const handleNativeShare = async () => {
     const shareData = {
       title: post.content || "Check out this post",
@@ -165,13 +162,11 @@ export default function PostDetail() {
   };
 
   const handleShare = () => setShowShareModal(true);
-
   const handleComment = () => navigate(`/post/${postId}/comments`);
-
   const handleReport = () => toast.info("Report feature coming soon");
 
   const handleDelete = async () => {
-    if (!confirm("Are you sure you want to delete this post?")) return;
+    if (!window.confirm("Are you sure you want to delete this post?")) return;
     try {
       await databases.deleteDocument(DATABASE_ID, COLLECTIONS.POSTS, postId);
       toast.success("Post deleted");
@@ -197,7 +192,6 @@ export default function PostDetail() {
   const authorName = author?.fullName || author?.username || "Unknown";
   const authorAvatar = author?.avatarUrl || null;
 
-  // Share Modal component
   const ShareModal = () => (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm animate-in fade-in">
       <div className="w-full max-w-[430px] bg-card rounded-t-2xl pb-safe animate-in slide-in-from-bottom-8 duration-300">
@@ -212,7 +206,6 @@ export default function PostDetail() {
         </div>
 
         <div className="p-4 space-y-3">
-          {/* Native Share (if available) */}
           {navigator.share && (
             <button
               onClick={handleNativeShare}
@@ -228,7 +221,6 @@ export default function PostDetail() {
             </button>
           )}
 
-          {/* Copy Link */}
           <button
             onClick={handleCopyLink}
             className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
@@ -242,64 +234,59 @@ export default function PostDetail() {
             </div>
           </button>
 
-          {/* WhatsApp */}
-         <button
-  onClick={handleShareToWhatsApp}
-  className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
->
-  <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center shrink-0">
-    <IoLogoWhatsapp className="w-5 h-5 text-green-500" />
-  </div>
-  <div className="flex-1 text-left">
-    <p className="font-jakarta font-medium text-sm text-foreground">WhatsApp</p>
-    <p className="text-xs font-jakarta text-muted-foreground">Share via WhatsApp</p>
-  </div>
-</button>
+          <button
+            onClick={handleShareToWhatsApp}
+            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
+          >
+            <div className="w-10 h-10 rounded-full bg-green-500/10 flex items-center justify-center shrink-0">
+              <IoLogoWhatsapp className="w-5 h-5 text-green-500" />
+            </div>
+            <div className="flex-1 text-left">
+              <p className="font-jakarta font-medium text-sm text-foreground">WhatsApp</p>
+              <p className="text-xs font-jakarta text-muted-foreground">Share via WhatsApp</p>
+            </div>
+          </button>
 
-          {/* Facebook */}
-       <button
-  onClick={handleShareToFacebook}
-  className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
->
-  <div className="w-10 h-10 rounded-full bg-blue-600/10 flex items-center justify-center shrink-0">
-    <FaFacebook className="w-5 h-5 text-blue-600" />
-  </div>
-  <div className="flex-1 text-left">
-    <p className="font-jakarta font-medium text-sm text-foreground">Facebook</p>
-    <p className="text-xs font-jakarta text-muted-foreground">Share on Facebook</p>
-  </div>
-</button>
+          <button
+            onClick={handleShareToFacebook}
+            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
+          >
+            <div className="w-10 h-10 rounded-full bg-blue-600/10 flex items-center justify-center shrink-0">
+              <FaFacebook className="w-5 h-5 text-blue-600" />
+            </div>
+            <div className="flex-1 text-left">
+              <p className="font-jakarta font-medium text-sm text-foreground">Facebook</p>
+              <p className="text-xs font-jakarta text-muted-foreground">Share on Facebook</p>
+            </div>
+          </button>
 
-          {/* Twitter (X) */}
-         <button
-  onClick={handleShareToTwitter}
-  className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
->
-  <div className="w-10 h-10 rounded-full bg-black/10 flex items-center justify-center shrink-0">
-    <FaTwitter className="w-5 h-5 text-black dark:text-white" />
-  </div>
-  <div className="flex-1 text-left">
-    <p className="font-jakarta font-medium text-sm text-foreground">Twitter (X)</p>
-    <p className="text-xs font-jakarta text-muted-foreground">Share on Twitter</p>
-  </div>
-</button>
+          <button
+            onClick={handleShareToTwitter}
+            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
+          >
+            <div className="w-10 h-10 rounded-full bg-black/10 flex items-center justify-center shrink-0">
+              <FaTwitter className="w-5 h-5 text-black dark:text-white" />
+            </div>
+            <div className="flex-1 text-left">
+              <p className="font-jakarta font-medium text-sm text-foreground">Twitter (X)</p>
+              <p className="text-xs font-jakarta text-muted-foreground">Share on Twitter</p>
+            </div>
+          </button>
 
-          {/* Email */}
-         <button
-  onClick={handleShareToEmail}
-  className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
->
-  <div className="w-10 h-10 rounded-full bg-gray-500/10 flex items-center justify-center shrink-0">
-    <FaEnvelope className="w-5 h-5 text-gray-500" />
-  </div>
-  <div className="flex-1 text-left">
-    <p className="font-jakarta font-medium text-sm text-foreground">Email</p>
-    <p className="text-xs font-jakarta text-muted-foreground">Share via Email</p>
-  </div>
-</button>
+          <button
+            onClick={handleShareToEmail}
+            className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-muted/50 transition-colors active:scale-[0.98]"
+          >
+            <div className="w-10 h-10 rounded-full bg-gray-500/10 flex items-center justify-center shrink-0">
+              <FaEnvelope className="w-5 h-5 text-gray-500" />
+            </div>
+            <div className="flex-1 text-left">
+              <p className="font-jakarta font-medium text-sm text-foreground">Email</p>
+              <p className="text-xs font-jakarta text-muted-foreground">Share via Email</p>
+            </div>
+          </button>
         </div>
 
-        {/* Cancel button at bottom */}
         <div className="p-4 pt-0">
           <button
             onClick={() => setShowShareModal(false)}
@@ -314,7 +301,6 @@ export default function PostDetail() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <div className="sticky top-0 z-40 bg-card/80 backdrop-blur-xl border-b border-border/50">
         <div className="max-w-[430px] mx-auto flex items-center justify-between px-4 py-3">
           <div className="flex items-center gap-3">
@@ -366,7 +352,6 @@ export default function PostDetail() {
       </div>
 
       <div className="max-w-[430px] mx-auto">
-        {/* Post Content */}
         <div className="bg-card overflow-hidden">
           {post.imageUrl && (
             <div className="w-full aspect-square bg-muted">
@@ -380,7 +365,6 @@ export default function PostDetail() {
           )}
         </div>
 
-        {/* Author Info & Actions */}
         <div className="px-4 py-3 border-b border-border/50">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -406,7 +390,6 @@ export default function PostDetail() {
           </div>
         </div>
 
-        {/* Stats & Actions */}
         <div className="px-4 py-3">
           <div className="flex items-center gap-6">
             <button
@@ -436,20 +419,18 @@ export default function PostDetail() {
           </div>
         </div>
 
-        {/* Comments Section (quick view) */}
         <div className="px-4 py-3 border-t border-border/50">
           <button
             onClick={handleComment}
             className="w-full text-center text-xs font-jakarta text-muted-foreground hover:text-primary transition-colors"
           >
-            {commentCount === 0 
-              ? "No comments yet. Be the first!" 
+            {commentCount === 0
+              ? "No comments yet. Be the first!"
               : `View all ${commentCount} comments`}
           </button>
         </div>
       </div>
 
-      {/* Share Modal */}
       {showShareModal && <ShareModal />}
     </div>
   );

@@ -65,8 +65,7 @@ async function run() {
   await createCollection('profiles', 'Profiles', [
     Permission.read(Role.any()),
     Permission.create(Role.users()),
-    Permission.update(Role.users()), // tightened per-document below via userId ownership pattern
-  ]);
+  ], true); // documentSecurity: true — update/delete permission is set per-document at creation, owner-only
   await addAttrs('profiles', [
     ['userId', 'string', 64, true],
     ['username', 'string', 64, true],
@@ -86,7 +85,7 @@ async function run() {
   await createCollection('pets', 'Pets', [
     Permission.read(Role.any()),
     Permission.create(Role.users()),
-  ]);
+  ], true); // documentSecurity: true — update/delete permission set per-document at creation, owner-only
   await addAttrs('pets', [
     ['ownerId', 'string', 64, true],
     ['name', 'string', 64, true],
@@ -138,6 +137,7 @@ async function run() {
     Permission.read(Role.any()),
     Permission.create(Role.users()),
     Permission.update(Role.users()), // needed so other users can toggle likes / bump commentCount
+    Permission.delete(Role.users()), // needed so the post's author can delete it
   ]);
   await addAttrs('posts', [
     ['userId', 'string', 64, true],
@@ -158,11 +158,14 @@ async function run() {
   await createCollection('conversations', 'Conversations', [
     Permission.read(Role.users()), // narrowed at query time by participantIds
     Permission.create(Role.users()),
+    Permission.update(Role.users()), // needed so participants can update unreadCounts when they read messages
   ]);
   await addAttrs('conversations', [
     ['listingId', 'string', 64, false],
     ['participantIds', 'string', 64, true, null, true], // array of user IDs
     ['unreadCounts', 'string', 4096, false, '{}'], // JSON string: { [userId]: count }
+    ['lastMessage', 'string', 2048, false],
+    ['lastMessageAt', 'datetime', null, false],
   ]);
   // Note: Appwrite does not support indexes on array attributes,
   // so participantIds is queried directly (e.g. Query.contains) without a custom index.
@@ -177,6 +180,7 @@ async function run() {
   await addAttrs('messages', [
     ['conversationId', 'string', 64, true],
     ['senderId', 'string', 64, true],
+    ['senderName', 'string', 128, false],
     ['content', 'string', 2048, true],
   ]);
   await addIndex('messages', 'idx_conversation', 'key', ['conversationId']);
@@ -281,6 +285,10 @@ async function addAttrs(collectionId, attrs) {
         );
       } else if (type === 'boolean') {
         await databases.createBooleanAttribute(
+          DATABASE_ID, collectionId, key, required, def ?? undefined, isArray ?? false
+        );
+      } else if (type === 'datetime') {
+        await databases.createDatetimeAttribute(
           DATABASE_ID, collectionId, key, required, def ?? undefined, isArray ?? false
         );
       }

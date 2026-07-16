@@ -1,18 +1,22 @@
 import { useState, useEffect } from "react";
-import { databases, DATABASE_ID, COLLECTIONS } from "@/lib/appwriteClient";
-import { Query } from "appwrite";
+import { databases, DATABASE_ID, COLLECTIONS, account } from "@/lib/appwriteClient";
+import { Query, ID } from "appwrite";
 import { Search, MapPin, Star, MessageCircle, ArrowLeft, ChevronDown, Crown } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/lib/AuthContext";
+import { toast } from "sonner";
 
 const regions = ["All Regions", "Greater Accra", "Ashanti", "Western", "Eastern", "Northern", "Volta"];
 
 export default function Breeders() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [breeders, setBreeders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [region, setRegion] = useState("All Regions");
   const [showRegion, setShowRegion] = useState(false);
+  const [startingChat, setStartingChat] = useState({});
 
   useEffect(() => {
     fetchBreeders();
@@ -31,7 +35,6 @@ export default function Breeders() {
         ]
       );
       
-      // Sort: featured first
       const breedersList = response.documents.sort((a, b) => {
         if (a.isFeatured && !b.isFeatured) return -1;
         if (!a.isFeatured && b.isFeatured) return 1;
@@ -60,6 +63,74 @@ export default function Breeders() {
       return loc.includes("kumasi") || loc.includes("ashanti");
     }
     return false;
+  };
+
+  const startChat = async (breederId, breederName) => {
+    if (!user) {
+      toast.error("Please log in to message breeders");
+      return;
+    }
+    if (user.$id === breederId) {
+      toast.info("This is you!");
+      return;
+    }
+
+    setStartingChat(prev => ({ ...prev, [breederId]: true }));
+    try {
+      // Check if conversation already exists
+      const existing = await databases.listDocuments(
+        DATABASE_ID,
+        COLLECTIONS.CONVERSATIONS,
+        [
+          Query.contains("participantIds", user.$id),
+          Query.contains("participantIds", breederId),
+          Query.limit(1)
+        ]
+      );
+
+      if (existing.documents.length > 0) {
+        navigate(`/conversation/${existing.documents[0].$id}`);
+        return;
+      }
+
+      // Create new conversation
+      const newConv = await databases.createDocument(
+        DATABASE_ID,
+        COLLECTIONS.CONVERSATIONS,
+        ID.unique(),
+        {
+          participantIds: [user.$id, breederId],
+          type: "direct",
+          name: `Chat with ${breederName}`,
+          lastMessage: "",
+          lastMessageAt: new Date().toISOString(),
+          unreadCounts: {
+            [user.$id]: 0,
+            [breederId]: 0,
+          },
+        }
+      );
+
+      // Create system message
+      await databases.createDocument(
+        DATABASE_ID,
+        COLLECTIONS.MESSAGES,
+        ID.unique(),
+        {
+          conversationId: newConv.$id,
+          senderId: "system",
+          content: "Conversation started",
+          role: "system",
+        }
+      );
+
+      navigate(`/conversation/${newConv.$id}`);
+    } catch (error) {
+      console.error("Error starting chat:", error);
+      toast.error("Failed to start conversation");
+    } finally {
+      setStartingChat(prev => ({ ...prev, [breederId]: false }));
+    }
   };
 
   const filteredBreeders = breeders.filter((b) => {
@@ -153,7 +224,7 @@ export default function Breeders() {
                 <div
                   key={breeder.$id}
                   className="bg-gradient-to-r from-primary/5 to-yellow-500/5 rounded-2xl border-2 border-primary/30 overflow-hidden active:scale-[0.98] transition-transform cursor-pointer"
-                  onClick={() => navigate(`/breeder/${breeder.userId}`)}
+                  onClick={() => navigate(`/user/${breeder.userId}`)}
                 >
                   <div className="flex items-center gap-4 p-4">
                     <div className="relative">
@@ -188,11 +259,16 @@ export default function Breeders() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        navigate(`/breeder/${breeder.userId}`);
+                        startChat(breeder.userId, breeder.fullName || breeder.username);
                       }}
-                      className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                      disabled={startingChat[breeder.userId]}
+                      className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
                     >
-                      <MessageCircle className="w-4 h-4" />
+                      {startingChat[breeder.userId] ? (
+                        <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                      ) : (
+                        <MessageCircle className="w-4 h-4" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -225,7 +301,7 @@ export default function Breeders() {
               <div
                 key={breeder.$id}
                 className="bg-card rounded-2xl border border-border/50 overflow-hidden active:scale-[0.98] transition-transform cursor-pointer"
-                onClick={() => navigate(`/breeder/${breeder.userId}`)}
+                onClick={() => navigate(`/user/${breeder.userId}`)}
               >
                 <div className="flex items-center gap-4 p-4">
                   <div className="w-14 h-14 rounded-full overflow-hidden bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center shrink-0">
@@ -255,11 +331,16 @@ export default function Breeders() {
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      navigate(`/breeder/${breeder.userId}`);
+                      startChat(breeder.userId, breeder.fullName || breeder.username);
                     }}
-                    className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
+                    disabled={startingChat[breeder.userId]}
+                    className="p-2 rounded-full bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
                   >
-                    <MessageCircle className="w-4 h-4" />
+                    {startingChat[breeder.userId] ? (
+                      <div className="w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    ) : (
+                      <MessageCircle className="w-4 h-4" />
+                    )}
                   </button>
                 </div>
               </div>
